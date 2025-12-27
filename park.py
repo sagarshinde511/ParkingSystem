@@ -2,6 +2,7 @@ import streamlit as st
 import mysql.connector
 from streamlit_autorefresh import st_autorefresh
 from datetime import date, time
+import bcrypt
 
 # ---------------- DATABASE CONFIG ----------------
 DB_CONFIG = {
@@ -11,22 +12,36 @@ DB_CONFIG = {
     "database": "u263681140_students"
 }
 
-# ---------------- USERS (DEMO) ----------------
-USERS = {
-    "admin": {"password": "admin123", "role": "Admin"},
-    "user": {"password": "user123", "role": "User"}
-}
-
 # ---------------- DB CONNECTION ----------------
 def get_db():
     return mysql.connector.connect(**DB_CONFIG)
 
-# ---------------- AUTO TABLE CREATION ----------------
+# ---------------- PASSWORD UTILS ----------------
+def hash_password(password):
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+def verify_password(password, hashed):
+    return bcrypt.checkpw(password.encode(), hashed.encode())
+
+# ---------------- AUTO CREATE TABLES ----------------
 def create_tables():
     conn = get_db()
     cursor = conn.cursor()
 
-    # Live parking status table
+    # Users table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS Reg_Users (
+        user_id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(100),
+        email VARCHAR(100) UNIQUE,
+        password VARCHAR(255),
+        mobile VARCHAR(15),
+        role ENUM('Admin','User') DEFAULT 'User',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    # Live parking status
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS LiveParkingSystem (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -37,19 +52,15 @@ def create_tables():
     )
     """)
 
-    # Insert default row if empty
     cursor.execute("SELECT COUNT(*) FROM LiveParkingSystem")
     if cursor.fetchone()[0] == 0:
-        cursor.execute("""
-            INSERT INTO LiveParkingSystem (S1,S2,S3,S4)
-            VALUES (1,1,1,1)
-        """)
+        cursor.execute("INSERT INTO LiveParkingSystem (S1,S2,S3,S4) VALUES (1,1,1,1)")
 
-    # Slot booking table
+    # Booking table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS slot_bookings (
         booking_id INT AUTO_INCREMENT PRIMARY KEY,
-        username VARCHAR(50),
+        username VARCHAR(100),
         slot_no VARCHAR(5),
         booking_date DATE,
         start_time TIME,
@@ -61,7 +72,7 @@ def create_tables():
     )
     """)
 
-    # Slot control table (ESP32)
+    # Slot control (ESP32)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS slot_control (
         slot_no VARCHAR(5) PRIMARY KEY,
@@ -69,20 +80,39 @@ def create_tables():
     )
     """)
 
-    # Insert slots if not exists
     for slot in ["S1","S2","S3","S4"]:
-        cursor.execute("""
-            INSERT IGNORE INTO slot_control (slot_no, lock_status)
-            VALUES (%s, 0)
-        """, (slot,))
+        cursor.execute(
+            "INSERT IGNORE INTO slot_control (slot_no, lock_status) VALUES (%s,0)",
+            (slot,)
+        )
 
     conn.commit()
     conn.close()
 
-# ---------------- INITIALIZE DB ----------------
 create_tables()
 
-# ---------------- FETCH LIVE STATUS ----------------
+# ---------------- AUTH ----------------
+def authenticate_user(email, password):
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM Reg_Users WHERE email=%s", (email,))
+    user = cursor.fetchone()
+    conn.close()
+    if user and verify_password(password, user["password"]):
+        return user
+    return None
+
+def register_user(name, email, password, mobile):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO Reg_Users (name, email, password, mobile)
+        VALUES (%s,%s,%s,%s)
+    """, (name, email, hash_password(password), mobile))
+    conn.commit()
+    conn.close()
+
+# ---------------- DATA FUNCTIONS ----------------
 def get_live_status():
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
@@ -91,29 +121,6 @@ def get_live_status():
     conn.close()
     return data
 
-# ---------------- SLOT CARD UI ----------------
-def slot_card(slot, value):
-    if value == 1:
-        color = "#d4edda"
-        status = "Available ✅"
-    else:
-        color = "#f8d7da"
-        status = "Booked ❌"
-
-    st.markdown(
-        f"""
-        <div style="background:{color};
-                    padding:20px;
-                    border-radius:12px;
-                    text-align:center;
-                    font-size:18px;
-                    font-weight:bold;">
-            🚗 {slot}<br>{status}
-        </div>
-        """, unsafe_allow_html=True
-    )
-
-# ---------------- BOOKING OVERLAP CHECK ----------------
 def check_overlap(slot, b_date, start, end):
     conn = get_db()
     cursor = conn.cursor()
@@ -128,7 +135,6 @@ def check_overlap(slot, b_date, start, end):
     conn.close()
     return count > 0
 
-# ---------------- BOOK SLOT ----------------
 def book_slot(username, slot, b_date, start, end):
     conn = get_db()
     cursor = conn.cursor()
@@ -140,33 +146,76 @@ def book_slot(username, slot, b_date, start, end):
     conn.commit()
     conn.close()
 
+# ---------------- UI HELPERS ----------------
+def slot_card(slot, value):
+    if value == 1:
+        color, text = "#d4edda", "Available ✅"
+    else:
+        color, text = "#f8d7da", "Booked ❌"
+
+    st.markdown(
+        f"""
+        <div style="background:{color};
+                    padding:20px;
+                    border-radius:12px;
+                    text-align:center;
+                    font-size:18px;
+                    font-weight:bold;">
+            🚗 {slot}<br>{text}
+        </div>
+        """, unsafe_allow_html=True
+    )
+
 # ---------------- SESSION ----------------
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
-# ================= LOGIN =================
+# ================= AUTH PAGES =================
 if not st.session_state.logged_in:
-    st.title("🔐 Live Parking System Login")
+    st.title("🔐 Smart Parking System")
 
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
+    menu = st.selectbox("Select", ["Login", "Register"])
 
-    if st.button("Login"):
-        if username in USERS and USERS[username]["password"] == password:
-            st.session_state.logged_in = True
-            st.session_state.username = username
-            st.session_state.role = USERS[username]["role"]
-            st.success("Login successful")
-            st.rerun()
-        else:
-            st.error("Invalid credentials")
+    if menu == "Register":
+        st.subheader("📝 User Registration")
+        name = st.text_input("Full Name")
+        email = st.text_input("Email")
+        mobile = st.text_input("Mobile Number")
+        password = st.text_input("Password", type="password")
+        confirm = st.text_input("Confirm Password", type="password")
+
+        if st.button("Register"):
+            if not all([name, email, mobile, password, confirm]):
+                st.error("All fields required")
+            elif password != confirm:
+                st.error("Passwords do not match")
+            else:
+                try:
+                    register_user(name, email, password, mobile)
+                    st.success("Registration successful! Please login.")
+                except:
+                    st.error("Email already exists")
+
+    if menu == "Login":
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+
+        if st.button("Login"):
+            user = authenticate_user(email, password)
+            if user:
+                st.session_state.logged_in = True
+                st.session_state.username = user["name"]
+                st.session_state.role = user["role"]
+                st.rerun()
+            else:
+                st.error("Invalid credentials")
 
 # ================= DASHBOARD =================
 else:
     st_autorefresh(interval=5000, key="refresh")
 
     st.title("🚗 Live Parking System")
-    st.write(f"👤 Role: **{st.session_state.role}**")
+    st.write(f"👤 {st.session_state.username} ({st.session_state.role})")
 
     tabs = ["Live Status"]
     if st.session_state.role == "User":
@@ -184,12 +233,8 @@ else:
 
         st.markdown(
             f"""
-            <div style="background:#cce5ff;
-                        padding:15px;
-                        border-radius:10px;
-                        text-align:center;
-                        font-size:20px;
-                        font-weight:bold;">
+            <div style="background:#cce5ff;padding:15px;border-radius:10px;
+                        text-align:center;font-size:20px;font-weight:bold;">
                 📊 Available Slots : {available}
             </div>
             """, unsafe_allow_html=True
@@ -202,7 +247,7 @@ else:
         with c3: slot_card("S3", data["S3"])
         with c4: slot_card("S4", data["S4"])
 
-    # -------- USER BOOKING --------
+    # -------- USER BOOK SLOT --------
     if st.session_state.role == "User":
         with pages[1]:
             st.subheader("🅿️ Book Slot")
@@ -218,7 +263,24 @@ else:
                     st.error("Slot already booked")
                 else:
                     book_slot(st.session_state.username, slot, b_date, start, end)
-                    st.success("Booking sent for admin approval")
+                    st.success("Booking request sent")
+
+        with pages[2]:
+            st.subheader("📄 My Bookings")
+            conn = get_db()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("""
+                SELECT slot_no, booking_date, start_time, end_time, booking_status
+                FROM slot_bookings
+                WHERE username=%s
+                ORDER BY booking_date DESC
+            """, (st.session_state.username,))
+            rows = cursor.fetchall()
+            conn.close()
+            if rows:
+                st.table(rows)
+            else:
+                st.info("No bookings found")
 
     # -------- ADMIN APPROVAL --------
     if st.session_state.role == "Admin":
@@ -230,9 +292,7 @@ else:
                 SELECT * FROM slot_bookings
                 WHERE booking_status='BOOKED'
             """)
-            rows = cursor.fetchall()
-
-            for r in rows:
+            for r in cursor.fetchall():
                 with st.expander(f"Booking #{r['booking_id']} - {r['slot_no']}"):
                     st.write(r)
                     if st.button("Approve", key=f"a{r['booking_id']}"):
@@ -243,7 +303,6 @@ else:
                         """,(r['booking_id'],))
                         conn.commit()
                         st.success("Approved")
-
             conn.close()
 
     # -------- LOGOUT --------
