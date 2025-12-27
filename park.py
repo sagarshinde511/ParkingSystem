@@ -4,7 +4,7 @@ from streamlit_autorefresh import st_autorefresh
 from datetime import date, time
 import bcrypt
 
-# ---------------- DATABASE CONFIG ----------------
+# ================= DATABASE CONFIG =================
 DB_CONFIG = {
     "host": "82.180.143.66",
     "user": "u263681140_students",
@@ -12,23 +12,23 @@ DB_CONFIG = {
     "database": "u263681140_students"
 }
 
-# ---------------- DB CONNECTION ----------------
+# ================= DB CONNECTION =================
 def get_db():
     return mysql.connector.connect(**DB_CONFIG)
 
-# ---------------- PASSWORD UTILS ----------------
+# ================= PASSWORD FUNCTIONS =================
 def hash_password(password):
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 def verify_password(password, hashed):
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
-# ---------------- AUTO CREATE TABLES ----------------
+# ================= AUTO CREATE TABLES =================
 def create_tables():
     conn = get_db()
     cursor = conn.cursor()
 
-    # Users table
+    # Registered users
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS Reg_Users (
         user_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -41,7 +41,7 @@ def create_tables():
     )
     """)
 
-    # Live parking status
+    # Live parking system
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS LiveParkingSystem (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -56,7 +56,7 @@ def create_tables():
     if cursor.fetchone()[0] == 0:
         cursor.execute("INSERT INTO LiveParkingSystem (S1,S2,S3,S4) VALUES (1,1,1,1)")
 
-    # Booking table
+    # Slot bookings
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS slot_bookings (
         booking_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -91,17 +91,7 @@ def create_tables():
 
 create_tables()
 
-# ---------------- AUTH ----------------
-def authenticate_user(email, password):
-    conn = get_db()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM Reg_Users WHERE email=%s", (email,))
-    user = cursor.fetchone()
-    conn.close()
-    if user and verify_password(password, user["password"]):
-        return user
-    return None
-
+# ================= AUTH FUNCTIONS =================
 def register_user(name, email, password, mobile):
     conn = get_db()
     cursor = conn.cursor()
@@ -112,7 +102,17 @@ def register_user(name, email, password, mobile):
     conn.commit()
     conn.close()
 
-# ---------------- DATA FUNCTIONS ----------------
+def authenticate_user(email, password):
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM Reg_Users WHERE email=%s", (email,))
+    user = cursor.fetchone()
+    conn.close()
+    if user and verify_password(password, user["password"]):
+        return user
+    return None
+
+# ================= DATA FUNCTIONS =================
 def get_live_status():
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
@@ -146,7 +146,7 @@ def book_slot(username, slot, b_date, start, end):
     conn.commit()
     conn.close()
 
-# ---------------- UI HELPERS ----------------
+# ================= UI HELPERS =================
 def slot_card(slot, value):
     if value == 1:
         color, text = "#d4edda", "Available ✅"
@@ -156,27 +156,35 @@ def slot_card(slot, value):
     st.markdown(
         f"""
         <div style="background:{color};
-                    padding:20px;
-                    border-radius:12px;
-                    text-align:center;
-                    font-size:18px;
-                    font-weight:bold;">
-            🚗 {slot}<br>{text}
+        padding:20px;border-radius:12px;
+        text-align:center;font-size:18px;font-weight:bold;">
+        🚗 {slot}<br>{text}
         </div>
         """, unsafe_allow_html=True
     )
 
-# ---------------- SESSION ----------------
+# ================= SESSION =================
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
+if "show_signup" not in st.session_state:
+    st.session_state.show_signup = False
 
-# ================= AUTH PAGES =================
+# ================= LOGIN / SIGNUP PAGE =================
 if not st.session_state.logged_in:
     st.title("🔐 Smart Parking System")
 
-    menu = st.selectbox("Select", ["Login", "Register"])
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Login"):
+            st.session_state.show_signup = False
+    with col2:
+        if st.button("Sign Up"):
+            st.session_state.show_signup = True
 
-    if menu == "Register":
+    st.divider()
+
+    # ---------- SIGN UP ----------
+    if st.session_state.show_signup:
         st.subheader("📝 User Registration")
         name = st.text_input("Full Name")
         email = st.text_input("Email")
@@ -192,15 +200,18 @@ if not st.session_state.logged_in:
             else:
                 try:
                     register_user(name, email, password, mobile)
-                    st.success("Registration successful! Please login.")
+                    st.success("Registration successful. Please login.")
+                    st.session_state.show_signup = False
                 except:
-                    st.error("Email already exists")
+                    st.error("Email already registered")
 
-    if menu == "Login":
+    # ---------- LOGIN ----------
+    else:
+        st.subheader("🔑 Login")
         email = st.text_input("Email")
         password = st.text_input("Password", type="password")
 
-        if st.button("Login"):
+        if st.button("Login Now"):
             user = authenticate_user(email, password)
             if user:
                 st.session_state.logged_in = True
@@ -208,12 +219,11 @@ if not st.session_state.logged_in:
                 st.session_state.role = user["role"]
                 st.rerun()
             else:
-                st.error("Invalid credentials")
+                st.error("Invalid email or password")
 
 # ================= DASHBOARD =================
 else:
     st_autorefresh(interval=5000, key="refresh")
-
     st.title("🚗 Live Parking System")
     st.write(f"👤 {st.session_state.username} ({st.session_state.role})")
 
@@ -226,7 +236,7 @@ else:
 
     pages = st.tabs(tabs)
 
-    # -------- LIVE STATUS --------
+    # ---------- LIVE STATUS ----------
     with pages[0]:
         data = get_live_status()
         available = sum(1 for v in data.values() if v == 1)
@@ -234,8 +244,8 @@ else:
         st.markdown(
             f"""
             <div style="background:#cce5ff;padding:15px;border-radius:10px;
-                        text-align:center;font-size:20px;font-weight:bold;">
-                📊 Available Slots : {available}
+            text-align:center;font-size:20px;font-weight:bold;">
+            📊 Available Slots : {available}
             </div>
             """, unsafe_allow_html=True
         )
@@ -247,7 +257,7 @@ else:
         with c3: slot_card("S3", data["S3"])
         with c4: slot_card("S4", data["S4"])
 
-    # -------- USER BOOK SLOT --------
+    # ---------- USER BOOKING ----------
     if st.session_state.role == "User":
         with pages[1]:
             st.subheader("🅿️ Book Slot")
@@ -273,7 +283,6 @@ else:
                 SELECT slot_no, booking_date, start_time, end_time, booking_status
                 FROM slot_bookings
                 WHERE username=%s
-                ORDER BY booking_date DESC
             """, (st.session_state.username,))
             rows = cursor.fetchall()
             conn.close()
@@ -282,7 +291,7 @@ else:
             else:
                 st.info("No bookings found")
 
-    # -------- ADMIN APPROVAL --------
+    # ---------- ADMIN APPROVAL ----------
     if st.session_state.role == "Admin":
         with pages[1]:
             st.subheader("🛠 Admin Approval")
@@ -305,7 +314,7 @@ else:
                         st.success("Approved")
             conn.close()
 
-    # -------- LOGOUT --------
+    # ---------- LOGOUT ----------
     with pages[-1]:
         if st.button("Logout"):
             st.session_state.clear()
