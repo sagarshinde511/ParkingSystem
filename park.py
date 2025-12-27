@@ -202,7 +202,7 @@ if not st.session_state.logged_in:
 
 # ================= DASHBOARD =================
 else:
-    st_autorefresh(interval=5000, key="refresh")
+    st_autorefresh(interval=10000, key="refresh")
 
     st.title("🚗 Live Parking Dashboard")
     st.write(f"👤 {st.session_state.username} ({st.session_state.role})")
