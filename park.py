@@ -82,7 +82,7 @@ def register_user(name, email, password, mobile):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO Reg_Users (name,email,password,mobile)
+        INSERT INTO Reg_Users1 (name,email,password,mobile)
         VALUES (%s,%s,%s,%s)
     """, (name, email, hash_password(password), mobile))
     conn.commit()
